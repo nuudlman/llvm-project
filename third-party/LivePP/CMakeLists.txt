@@ -4,3 +4,4 @@ if (NOT WIN32)
     message(FATAL_ERROR "Live++ is currently only supported on Windows")
 endif()
 
+message(FATAL_ERROR "TODO: finish live++ integration")
