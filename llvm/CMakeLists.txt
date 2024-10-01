@@ -786,6 +786,7 @@ if(LLVM_INTEGRATED_CRT_ALLOC)
   endif()
 endif()
 
+
 # Define options to control the inclusion and default build behavior for
 # components which may not strictly be necessary (tools, examples, and tests).
 #
@@ -1463,4 +1464,16 @@ if (XCODE)
   foreach(target ${LLVM_XCODE_EXTRA_TARGET_SCHEMES})
     set_target_properties(${target} PROPERTIES XCODE_GENERATE_SCHEME ON)
   endforeach()
+endif()
+
+if (WIN32)
+  option(LLVM_ENABLE_LIVEPLUSPLUS "Enable Live++ to hot reload code that uses the LLVM command-line parser" ON)
+
+  if (LLVM_ENABLE_LIVEPLUSPLUS)
+    if (NOT MSVC)
+      message(FATAL_ERROR "Only MSVC style compilers are supported with Live++")
+    endif ()
+    add_subdirectory(${LLVM_THIRD_PARTY_DIR}/LivePP
+        ${CMAKE_CURRENT_BINARY_DIR}/third-party/LivePP)
+  endif()
 endif()

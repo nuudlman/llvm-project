@@ -18,6 +18,13 @@
 
 #ifdef _WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
+
+#ifdef LLVM_ENABLED_LIVEPLUSPLUS
+#include "LPP_API_x64_CPP.h"
+#include <filesystem>
+#include <iostream>
+static lpp::LppDefaultAgent LppAgent;
+#endif
 #endif
 
 #ifdef __MVS__
@@ -96,6 +103,26 @@ InitLLVM::InitLLVM(int &Argc, const char **&Argv,
   Argc = Args.size() - 1;
   Argv = Args.data();
 #endif
+
+#ifdef LLVM_ENABLED_LIVEPLUSPLUS
+  std::cout << "Current Path: " << std::filesystem::current_path() << "\n";
+
+  std::string path = "../../";
+  for (const auto &entry : std::filesystem::directory_iterator(path))
+    std::cout << entry.path() << std::endl;
+
+  // Create a default agent, loading the Live++ agent from <root>/third-party/LivePP
+  LppAgent = lpp::LppCreateDefaultAgent(nullptr, L"../../../third-party/LivePP");
+
+  // Bail out if the agent is not valid
+  if (!LppIsValidDefaultAgent(&LppAgent)) {
+    errs() << "[Live++]: Bailing out: Default agent is not valid\n";
+    exit(1);
+  }
+
+  // Enable Live++ for all loaded modules
+  LppAgent.EnableModule(lpp::LppGetCurrentModulePath(), lpp::LPP_MODULES_OPTION_ALL_IMPORT_MODULES, nullptr, nullptr);
+#endif
 }
 
 InitLLVM::~InitLLVM() {
@@ -103,4 +130,9 @@ InitLLVM::~InitLLVM() {
   CleanupStdHandles(nullptr);
 #endif
   llvm_shutdown();
+
+#ifdef LLVM_ENABLED_LIVEPLUSPLUS
+  // destroy the Live++ agent
+  lpp::LppDestroyDefaultAgent(&LppAgent);
+#endif
 }
