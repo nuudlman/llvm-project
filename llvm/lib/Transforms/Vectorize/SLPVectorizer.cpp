@@ -831,8 +831,7 @@ static bool isValidForAlternation(unsigned Opcode) {
 }
 
 static InstructionsState getSameOpcode(ArrayRef<Value *> VL,
-                                       const TargetLibraryInfo &TLI,
-                                       unsigned BaseIndex = 0);
+                                       const TargetLibraryInfo &TLI);
 
 /// Checks if the provided operands of 2 cmp instructions are compatible, i.e.
 /// compatible instructions or constants, or just some other regular values.
@@ -873,8 +872,8 @@ static bool isCmpSameOrSwapped(const CmpInst *BaseCI, const CmpInst *CI,
 /// InstructionsState, the Opcode that we suppose the whole list
 /// could be vectorized even if its structure is diverse.
 static InstructionsState getSameOpcode(ArrayRef<Value *> VL,
-                                       const TargetLibraryInfo &TLI,
-                                       unsigned BaseIndex) {
+                                       const TargetLibraryInfo &TLI) {
+  constexpr unsigned BaseIndex = 0;
   // Make sure these are all Instructions.
   if (llvm::any_of(VL, [](Value *V) { return !isa<Instruction>(V); }))
     return InstructionsState(VL[BaseIndex], nullptr, nullptr);
@@ -2313,10 +2312,10 @@ public:
       assert((empty() || VL.size() == getNumLanes()) &&
              "Expected same number of lanes");
       assert(isa<Instruction>(VL[0]) && "Expected instruction");
-      unsigned NumOperands = cast<Instruction>(VL[0])->getNumOperands();
       constexpr unsigned IntrinsicNumOperands = 2;
-      if (isa<IntrinsicInst>(VL[0]))
-        NumOperands = IntrinsicNumOperands;
+      unsigned NumOperands = isa<IntrinsicInst>(VL[0])
+                                 ? IntrinsicNumOperands
+                                 : cast<Instruction>(VL[0])->getNumOperands();
       OpsVec.resize(NumOperands);
       unsigned NumLanes = VL.size();
       for (unsigned OpIdx = 0; OpIdx != NumOperands; ++OpIdx) {
@@ -4579,6 +4578,8 @@ BoUpSLP::findReusedOrderedScalars(const BoUpSLP::TreeEntry &TE) {
               continue;
             if (!TE.ReuseShuffleIndices.empty())
               K = TE.ReuseShuffleIndices[K];
+            if (K == PoisonMaskElem)
+              continue;
             if (!TE.ReorderIndices.empty())
               K = std::distance(TE.ReorderIndices.begin(),
                                 find(TE.ReorderIndices, K));
@@ -6520,7 +6521,8 @@ static void gatherPossiblyVectorizableLoads(
           if (Idx < Start)
             continue;
           ToAdd.clear();
-          if (LI->getParent() != Data.front().first->getParent())
+          if (LI->getParent() != Data.front().first->getParent() ||
+              LI->getType() != Data.front().first->getType())
             continue;
           std::optional<int> Dist =
               getPointersDiff(LI->getType(), LI->getPointerOperand(),
