@@ -2672,8 +2672,8 @@ def TransposeConv2DOp : Op<Transform_Dialect,
      TransformEachOpTrait,
      ReportTrackingListenerFailuresOpTrait]> {
   let description = [{
-    Convert linalg.conv_2d_nhwc_fhwc into linalg.conv_2d_nhwc_hwcf by introducing
-    a linalg.transpose on the filter tensor/memref.
+    Convert linalg.conv_2d_nhwc_fhwc into linalg.conv_2d_nhwc_hwcf or vice versa
+    by introducing a linalg.transpose on the filter tensor/memref.
 
     Whilst the fhwc filter channel ordering can be desirable for certain targets
     and is a more direct mapping to higher level dialects such as TOSA (which only

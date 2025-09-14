@@ -14,6 +14,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir {
 namespace linalg {
@@ -41,20 +42,40 @@ namespace {
 ///
 /// with an analogous example for the quantized case.
 // clang-format on
-template <typename FHWCConvOp, typename HWCFConvOp>
+template <typename FromConvOp, typename ToConvOp>
 FailureOr<Operation *> transposeConv2DHelper(RewriterBase &rewriter,
-                                             FHWCConvOp op) {
+                                             FromConvOp op) {
   // Construct a permutation of the filter tensor dimensions. For a 2D
-  // convolution this will be known statically as [1, 2, 3, 0].
-  SmallVector<int64_t> filterPerm = {1, 2, 3, 0};
+  // FWCH convolution this will be known statically as [1, 2, 3, 0].
+  auto filterPerm = TypeSwitch<Operation*, FailureOr<SmallVector<int64_t, 4>>>(op)
+    .Case([&](linalg::Conv2DNhwcFhwcOp op) {
+      return SmallVector<int64_t, 4>{1, 2, 3, 0};
+    })
+    .Case([&](linalg::Conv2DNhwcFhwcQOp op) {
+      return SmallVector<int64_t, 4>{1, 2, 3, 0};
+    })
+    .Case([&](linalg::Conv2DNhwcHwcfOp op) {
+      return SmallVector<int64_t, 4>{3, 0, 1, 2};
+    })
+    .Case([&](linalg::Conv2DNhwcHwcfQOp op) {
+      return SmallVector<int64_t, 4>{3, 0, 1, 2};
+    })
+    .Default([&](Operation *op) {
+      return rewriter.notifyMatchFailure(op, "not supported");
+    });
+
+  if (failed(filterPerm)) {
+    return rewriter.notifyMatchFailure(op, "not supported");
+  }
+
 
   // Create the type for the transposed filter tensor.
   auto filter = op->getOperand(1);
   auto filterTy = cast<ShapedType>(filter.getType());
-  SmallVector<int64_t> newFilterShape(filterPerm.size());
+  SmallVector<int64_t> newFilterShape(filterPerm->size());
   std::generate(std::begin(newFilterShape), std::end(newFilterShape),
                 [dim = 0, &filterTy, &filterPerm]() mutable {
-                  return filterTy.getShape()[filterPerm[dim++]];
+                  return filterTy.getShape()[(*filterPerm)[dim++]];
                 });
 
   // Because linalg.transpose expects an "out" parameter we need to pass it a
@@ -77,7 +98,7 @@ FailureOr<Operation *> transposeConv2DHelper(RewriterBase &rewriter,
 
   // We can then construct the transposition on our filter.
   auto transpose =
-      linalg::TransposeOp::create(rewriter, loc, filter, input, filterPerm);
+      linalg::TransposeOp::create(rewriter, loc, filter, input, *filterPerm);
 
   Value newFilter;
   if (isTensorOp) {
@@ -97,19 +118,19 @@ FailureOr<Operation *> transposeConv2DHelper(RewriterBase &rewriter,
     resultTy.push_back(op->getResult(0).getType());
   }
   auto newConv =
-      HWCFConvOp::create(rewriter, loc, resultTy, newInputs, op.getOutputs(),
+      ToConvOp::create(rewriter, loc, resultTy, newInputs, op.getOutputs(),
                          op.getStrides(), op.getDilations());
   rewriter.replaceOp(op, newConv);
   return newConv.getOperation();
 }
 
-template <typename FHWCConvOp, typename HWCFConvOp>
-class ConvConverter : public OpRewritePattern<FHWCConvOp> {
+template <typename FromConvOp, typename ToConvOp>
+class ConvConverter : public OpRewritePattern<FromConvOp> {
 public:
-  using OpRewritePattern<FHWCConvOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(FHWCConvOp op,
+  using OpRewritePattern<FromConvOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(FromConvOp op,
                                 PatternRewriter &rewriter) const final {
-    if (failed(transposeConv2DHelper<FHWCConvOp, HWCFConvOp>(rewriter, op))) {
+    if (failed(transposeConv2DHelper<FromConvOp, ToConvOp>(rewriter, op))) {
       return failure();
     }
     return success();
@@ -131,11 +152,27 @@ FailureOr<Operation *> transposeConv2D(RewriterBase &rewriter,
                                linalg::Conv2DNhwcHwcfQOp>(rewriter, op);
 }
 
+FailureOr<Operation *> transposeConv2D(RewriterBase &rewriter,
+                                       linalg::Conv2DNhwcHwcfOp op) {
+
+  return transposeConv2DHelper<linalg::Conv2DNhwcHwcfOp,
+                               linalg::Conv2DNhwcFhwcOp>(rewriter, op);
+}
+
+FailureOr<Operation *> transposeConv2D(RewriterBase &rewriter,
+                                       linalg::Conv2DNhwcHwcfQOp op) {
+
+  return transposeConv2DHelper<linalg::Conv2DNhwcHwcfQOp,
+                               linalg::Conv2DNhwcFhwcQOp>(rewriter, op);
+}
+
 void populateTransposeConv2DPatterns(RewritePatternSet &patterns) {
   MLIRContext *context = patterns.getContext();
   patterns.insert<
       ConvConverter<linalg::Conv2DNhwcFhwcOp, linalg::Conv2DNhwcHwcfOp>,
-      ConvConverter<linalg::Conv2DNhwcFhwcQOp, linalg::Conv2DNhwcHwcfQOp>>(
+      ConvConverter<linalg::Conv2DNhwcFhwcQOp, linalg::Conv2DNhwcHwcfQOp>,
+      ConvConverter<linalg::Conv2DNhwcHwcfOp, linalg::Conv2DNhwcFhwcOp>,
+      ConvConverter<linalg::Conv2DNhwcHwcfQOp, linalg::Conv2DNhwcFhwcQOp>>(
       context);
 }
 } // namespace linalg

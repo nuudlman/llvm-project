@@ -1444,6 +1444,12 @@ FailureOr<Operation *> transposeConv2D(RewriterBase &rewriter,
                                        linalg::Conv2DNhwcFhwcOp op);
 FailureOr<Operation *> transposeConv2D(RewriterBase &rewriter,
                                        linalg::Conv2DNhwcFhwcQOp op);
+/// Convert linalg.conv_2d_nhwc_hwcf(_q) to linalg.conv_2d_nhwc_fhwc(_q) by
+/// materializing transpose.
+FailureOr<Operation *> transposeConv2D(RewriterBase &rewriter,
+                                       linalg::Conv2DNhwcHwcfOp op);
+FailureOr<Operation *> transposeConv2D(RewriterBase &rewriter,
+                                       linalg::Conv2DNhwcHwcfQOp op);
 
 /// Convert Linalg matmul ops to transposed variants.
 FailureOr<Operation *> transposeMatmul(RewriterBase &rewriter,

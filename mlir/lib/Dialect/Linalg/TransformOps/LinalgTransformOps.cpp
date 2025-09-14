@@ -4095,6 +4095,12 @@ DiagnosedSilenceableFailure transform::TransposeConv2DOp::applyToOne(
           .Case([&](linalg::Conv2DNhwcFhwcQOp op) {
             return transposeConv2D(rewriter, op);
           })
+          .Case([&](linalg::Conv2DNhwcHwcfOp op) {
+            return transposeConv2D(rewriter, op);
+          })
+          .Case([&](linalg::Conv2DNhwcHwcfQOp op) {
+            return transposeConv2D(rewriter, op);
+          })
           .Default([&](Operation *op) {
             return rewriter.notifyMatchFailure(op, "not supported");
           });
