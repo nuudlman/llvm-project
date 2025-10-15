@@ -217,9 +217,6 @@ updateCalls(ModuleOp module, const AllocDynamicSizesMap &map,
     }
     if (!options.filterFn(&callee))
       return;
-    if (callee.isExternal() || callee.isPublic())
-      return;
-
     SmallVector<Value, 6> replaceWithNewCallResults;
     SmallVector<Value, 6> replaceWithOutParams;
     for (OpResult result : op.getResults()) {
@@ -295,14 +292,14 @@ LogicalResult mlir::bufferization::promoteBufferResultsToOutParams(
   // function.
   AllocDynamicSizesMap map;
   for (auto func : module.getOps<func::FuncOp>()) {
-    if (func.isExternal() || func.isPublic())
-      continue;
     if (!options.filterFn(&func))
       continue;
     SmallVector<BlockArgument, 6> appendedEntryArgs;
     if (failed(
             updateFuncOp(func, appendedEntryArgs, options.addResultAttribute)))
       return failure();
+    if (func.isExternal())
+      continue;
     if (failed(updateReturnOps(func, appendedEntryArgs, map, options))) {
       return failure();
     }
