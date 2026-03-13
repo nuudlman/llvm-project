@@ -172,3 +172,31 @@ func.func @test_func() {
 #loc = loc("a.py":1150:34)
 #loc1 = loc("b.py":321:17)
 #loc2 = loc(callsite(#loc at #loc1))
+
+// -----
+
+// Test that complex call stacks survive
+// CHECK-LABEL: llvm.func @main
+
+#loc1 = loc("x")
+module @jit_add42 {
+  llvm.func @main(%arg0: i32 loc("x")) -> (i32) {
+    %0 = llvm.mlir.constant(42 : i32) : i32 loc(#loc)
+    %1 = llvm.add %arg0, %0 : i32 loc(#loc13)
+    llvm.return %1 : i32 loc(#loc)
+  } loc(#loc)
+} loc(#loc)
+#loc = loc(unknown)
+#loc2 = loc("export.py":44:15 to :21)
+#loc3 = loc("export.py":23:23 to :51)
+#loc4 = loc("export.py":46:14 to :30)
+#loc5 = loc(".venv/bin/export":10:13 to :19)
+#loc6 = loc("main.<locals>.add42"(#loc2))
+#loc7 = loc("export"(#loc3))
+#loc8 = loc("main"(#loc4))
+#loc9 = loc("<module>"(#loc5))
+#loc10 = loc(callsite(#loc8 at #loc9))
+#loc11 = loc(callsite(#loc7 at #loc10))
+#loc12 = loc(callsite(#loc6 at #loc11))
+#loc13 = loc("jit(add42)/add"(#loc12))
+

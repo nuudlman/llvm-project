@@ -101,7 +101,10 @@ static Location getNestedLoc(Operation *op, LLVM::DIScopeAttr scopeAttr,
   auto lexicalBlockFileAttr = LLVM::DILexicalBlockFileAttr::get(
       context, scopeAttr, calleeFileAttr, /*discriminator=*/0);
   Location loc = calleeLoc;
-  // Recurse if the callee location is again a call site.
+  // Recurse if the callee location is again a call site or a name.
+  if (auto nameLoc = dyn_cast<NameLoc>(calleeLoc)) {
+    loc = getNestedLoc(op, lexicalBlockFileAttr, nameLoc.getChildLoc());
+  }
   if (auto callSiteLoc = dyn_cast<CallSiteLoc>(calleeLoc)) {
     auto nestedLoc = callSiteLoc.getCallee();
     loc = getNestedLoc(op, lexicalBlockFileAttr, nestedLoc);
