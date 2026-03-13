@@ -22,7 +22,7 @@ namespace LLVM {
 using namespace mlir;
 
 /// Attempt to extract a filename for the given loc.
-static FileLineColLoc extractFileLoc(Location loc) {
+static std::optional<FileLineColLoc> extractFileLoc(Location loc) {
   if (auto fileLoc = dyn_cast<FileLineColLoc>(loc))
     return fileLoc;
   if (auto nameLoc = dyn_cast<NameLoc>(loc))
@@ -37,7 +37,7 @@ static FileLineColLoc extractFileLoc(Location loc) {
   }
   if (auto callerLoc = dyn_cast<CallSiteLoc>(loc))
     return extractFileLoc(callerLoc.getCaller());
-  return FileLineColLoc();
+  return std::nullopt;
 }
 
 /// Creates a DISubprogramAttr with the provided compile unit and attaches it
@@ -55,9 +55,9 @@ static void addScopeToFunction(LLVM::LLVMFuncOp llvmFunc,
   // Filename and line associate to the function.
   LLVM::DIFileAttr fileAttr;
   int64_t line = 1;
-  if (FileLineColLoc fileLoc = extractFileLoc(loc)) {
-    line = fileLoc.getLine();
-    StringRef inputFilePath = fileLoc.getFilename().getValue();
+  if (auto fileLoc = extractFileLoc(loc)) {
+    line = fileLoc->getLine();
+    StringRef inputFilePath = fileLoc->getFilename().getValue();
     fileAttr =
         LLVM::DIFileAttr::get(context, llvm::sys::path::filename(inputFilePath),
                               llvm::sys::path::parent_path(inputFilePath));
@@ -90,26 +90,63 @@ static void addScopeToFunction(LLVM::LLVMFuncOp llvmFunc,
   llvmFunc->setLoc(FusedLoc::get(context, {loc}, subprogramAttr));
 }
 
+// Build a DI scope for a callee location such that wrappers like NameLoc are
+// preserved.
+static LLVM::DIScopeAttr buildCalleeScope(MLIRContext *context,
+                                          LLVM::DIScopeAttr parentScope,
+                                          Location calleeLoc,
+                                          LLVM::DICompileUnitAttr compileUnit) {
+  auto fileLoc = extractFileLoc(calleeLoc);
+  if (!fileLoc)
+    return parentScope;
+
+  auto calleeFileAttr = LLVM::DIFileAttr::get(
+      context, llvm::sys::path::filename(fileLoc->getFilename()),
+      llvm::sys::path::parent_path(fileLoc->getFilename()));
+
+  if (auto nameLoc = dyn_cast<NameLoc>(calleeLoc)) {
+    return LLVM::DISubprogramAttr::get(
+        context, /*id=*/DistinctAttr::create(UnitAttr::get(context)),
+        compileUnit, parentScope, nameLoc.getName(), nameLoc.getName(),
+        calleeFileAttr, fileLoc->getLine(), fileLoc->getLine(),
+        LLVM::DISubprogramFlags::Definition |
+            LLVM::DISubprogramFlags::Optimized,
+        LLVM::DISubroutineTypeAttr::get(context, llvm::dwarf::DW_CC_normal, {}),
+        {}, {});
+  }
+
+  return LLVM::DILexicalBlockFileAttr::get(context, parentScope, calleeFileAttr, 0);
+}
+
+// Return a processable CallSiteLoc from the given location.
+static std::optional<CallSiteLoc> getCallSiteLoc(Location loc) {
+  if (auto nameLoc = dyn_cast<NameLoc>(loc))
+    return getCallSiteLoc(nameLoc.getChildLoc());
+  if (auto callLoc = dyn_cast<CallSiteLoc>(loc))
+    return callLoc;
+  if (auto fusedLoc = dyn_cast<FusedLoc>(loc)) {
+    for (auto subLoc : fusedLoc.getLocations()) {
+      if (auto callLoc = getCallSiteLoc(subLoc)) {
+        return callLoc;
+      }
+    }
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
 // Get a nested loc for inlined functions.
 static Location getNestedLoc(Operation *op, LLVM::DIScopeAttr scopeAttr,
-                             Location calleeLoc) {
-  auto calleeFileName = extractFileLoc(calleeLoc).getFilename();
+                             Location calleeLoc, LLVM::DICompileUnitAttr compileUnit) {
   auto *context = op->getContext();
-  LLVM::DIFileAttr calleeFileAttr =
-      LLVM::DIFileAttr::get(context, llvm::sys::path::filename(calleeFileName),
-                            llvm::sys::path::parent_path(calleeFileName));
-  auto lexicalBlockFileAttr = LLVM::DILexicalBlockFileAttr::get(
-      context, scopeAttr, calleeFileAttr, /*discriminator=*/0);
+  auto newScope = buildCalleeScope(context, scopeAttr, calleeLoc, compileUnit);
   Location loc = calleeLoc;
-  // Recurse if the callee location is again a call site or a name.
-  if (auto nameLoc = dyn_cast<NameLoc>(calleeLoc)) {
-    loc = getNestedLoc(op, lexicalBlockFileAttr, nameLoc.getChildLoc());
+  // Recurse if the callee location is again a call site.
+  if (auto callSiteLoc = getCallSiteLoc(calleeLoc)) {
+    auto nestedLoc = callSiteLoc->getCallee();
+    loc = getNestedLoc(op, newScope, nestedLoc, compileUnit);
   }
-  if (auto callSiteLoc = dyn_cast<CallSiteLoc>(calleeLoc)) {
-    auto nestedLoc = callSiteLoc.getCallee();
-    loc = getNestedLoc(op, lexicalBlockFileAttr, nestedLoc);
-  }
-  return FusedLoc::get(context, {loc}, lexicalBlockFileAttr);
+  return FusedLoc::get(context, {loc}, newScope);
 }
 
 /// Adds DILexicalBlockFileAttr for operations with CallSiteLoc and operations
@@ -117,17 +154,18 @@ static Location getNestedLoc(Operation *op, LLVM::DIScopeAttr scopeAttr,
 static void setLexicalBlockFileAttr(Operation *op) {
   Location opLoc = op->getLoc();
 
-  if (auto callSiteLoc = dyn_cast<CallSiteLoc>(opLoc)) {
-    auto callerLoc = callSiteLoc.getCaller();
-    auto calleeLoc = callSiteLoc.getCallee();
+  if (auto callSiteLoc = getCallSiteLoc(opLoc)) {
+    auto callerLoc = callSiteLoc->getCaller();
+    auto calleeLoc = callSiteLoc->getCallee();
     LLVM::DIScopeAttr scopeAttr;
     // We assemble the full inline stack so the parent of this loc must be a
     // function
     if (auto funcOp = op->getParentOfType<LLVM::LLVMFuncOp>()) {
       if (auto funcOpLoc =
               llvm::dyn_cast_if_present<FusedLoc>(funcOp.getLoc())) {
-        scopeAttr = cast<LLVM::DISubprogramAttr>(funcOpLoc.getMetadata());
-        op->setLoc(CallSiteLoc::get(getNestedLoc(op, scopeAttr, calleeLoc),
+        auto subprogramAttr = cast<LLVM::DISubprogramAttr>(funcOpLoc.getMetadata());
+        scopeAttr = subprogramAttr;
+        op->setLoc(CallSiteLoc::get(getNestedLoc(op, scopeAttr, calleeLoc, subprogramAttr.getCompileUnit()),
                                     callerLoc));
       }
     }
@@ -139,16 +177,16 @@ static void setLexicalBlockFileAttr(Operation *op) {
   if (!funcOp)
     return;
 
-  FileLineColLoc opFileLoc = extractFileLoc(opLoc);
+  auto opFileLoc = extractFileLoc(opLoc);
   if (!opFileLoc)
     return;
 
-  FileLineColLoc funcFileLoc = extractFileLoc(funcOp.getLoc());
+  auto funcFileLoc = extractFileLoc(funcOp.getLoc());
   if (!funcFileLoc)
     return;
 
-  StringRef opFile = opFileLoc.getFilename().getValue();
-  StringRef funcFile = funcFileLoc.getFilename().getValue();
+  StringRef opFile = opFileLoc->getFilename().getValue();
+  StringRef funcFile = funcFileLoc->getFilename().getValue();
 
   // Handle cross-file operations: add DILexicalBlockFileAttr when the
   // operation's source file differs from its containing function.
@@ -199,8 +237,8 @@ struct DIScopeForLLVMFuncOpPass
       compileUnitAttr = fusedCompileUnitAttr.getMetadata();
     } else {
       LLVM::DIFileAttr fileAttr;
-      if (FileLineColLoc fileLoc = extractFileLoc(loc)) {
-        StringRef inputFilePath = fileLoc.getFilename().getValue();
+      if (auto fileLoc = extractFileLoc(loc)) {
+        StringRef inputFilePath = fileLoc->getFilename().getValue();
         fileAttr = LLVM::DIFileAttr::get(
             context, llvm::sys::path::filename(inputFilePath),
             llvm::sys::path::parent_path(inputFilePath));
